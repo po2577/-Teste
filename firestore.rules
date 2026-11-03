@@ -1,0 +1,89 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function emailVerified() {
+      return signedIn()
+        && request.auth.token.email_verified == true;
+    }
+
+    function userEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    function isAuthorizedStudent() {
+      return emailVerified()
+        && exists(
+          /databases/$(database)/documents/authorizedUsers/$(userEmail())
+        )
+        && get(
+          /databases/$(database)/documents/authorizedUsers/$(userEmail())
+        ).data.active == true;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(
+          /databases/$(database)/documents/admins/$(request.auth.uid)
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Lista branca de alunos
+    // Cada utilizador só pode consultar o seu próprio registo.
+    // A coleção é gerida no Firebase Console ou através do Admin SDK.
+    // ---------------------------------------------------------------
+    match /authorizedUsers/{email} {
+      allow get: if emailVerified()
+        && email == userEmail();
+
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // ---------------------------------------------------------------
+    // Requisições
+    // ---------------------------------------------------------------
+    match /requisicoes/{requestId} {
+
+      allow create: if isAuthorizedStudent()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email.lower() == userEmail()
+        && request.resource.data.estado == "Pendente";
+
+      // Também protege queries: uma query só é aceite se o Firestore
+      // conseguir provar que todos os documentos devolvidos pertencem
+      // ao utilizador. Por isso, no app.js a query deve conter:
+      // where("uid", "==", user.uid)
+      allow read: if isAdmin()
+        || (
+          isAuthorizedStudent()
+          && resource.data.uid == request.auth.uid
+        );
+
+      // Só administradores alteram estados/dados ou eliminam pedidos.
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------------------------------------------------------------
+    // Administradores
+    // ---------------------------------------------------------------
+    match /admins/{adminId} {
+      allow get: if signedIn()
+        && request.auth.uid == adminId;
+
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // Tudo o que não estiver explicitamente autorizado fica bloqueado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
